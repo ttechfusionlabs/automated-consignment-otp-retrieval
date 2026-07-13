@@ -1,0 +1,332 @@
+{
+  "name": "Excel Database Lookup Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "otp-process",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "6aebc935-f556-4f16-913c-e0e4d210ad34",
+      "name": "Webhook - Receive Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1040,
+        -128
+      ],
+      "webhookId": "otp-process-webhook",
+      "notes": "PowerShell POSTs {inputFile, outputFileName} plus header X-Webhook-Token here."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond_token",
+              "leftValue": "={{$json.headers['x-webhook-token']}}",
+              "rightValue": "YOUR_WEBHOOK_TOKEN",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f27cc3ed-0c67-4cf0-8fd2-8da1f43ad81b",
+      "name": "IF - Valid Webhook Token",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -816,
+        -128
+      ],
+      "notes": "Rejects any call that does not send the correct X-Webhook-Token header. MUST match Webhook.SharedSecretHeaderValue in otp-config.json."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": false, \"error\": \"Unauthorized - invalid or missing webhook token\" } }}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "9b04bc98-f7d2-4f42-ad63-1805f6f0a24f",
+      "name": "Respond - Unauthorized",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -592,
+        -32
+      ]
+    },
+    {
+      "parameters": {
+        "fileSelector": "={{$json.body.inputFile}}",
+        "options": {
+          "dataPropertyName": "data"
+        }
+      },
+      "id": "18086b0f-1b4e-43a7-bb1d-a0b281a5a6d0",
+      "name": "Read Input Excel (Disk)",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        -592,
+        -224
+      ],
+      "notes": "Reads the .xlsx that PowerShell already saved into /files/input/ (path comes from webhook body.inputFile)."
+    },
+    {
+      "parameters": {
+        "options": {
+          "headerRow": false
+        }
+      },
+      "id": "86fe64c8-6ae2-4e9e-9e67-6df269a2b68a",
+      "name": "Parse Excel -> CN Rows",
+      "type": "n8n-nodes-base.spreadsheetFile",
+      "typeVersion": 2,
+      "position": [
+        -368,
+        -224
+      ],
+      "notes": "Converts the binary xlsx into one JSON item per row, each with a CN property."
+    },
+    {
+      "parameters": {
+        "jsCode": "const CN_PATTERN = /^ECR[0-9A-Z]+$/i;\nconst seen = new Set();\nconst cleaned = [];\nfor (const item of items) {\n  // Parse Excel node output structure: item.json.row is an array\n  // row[0]=Branch Name, row[1]=Cn, row[2]=Merchant Name, row[3]=OTP\n  const rowArr = item.json.row;\n  let raw;\n\n  if (Array.isArray(rowArr)) {\n    raw = rowArr[1]; // Column B = Cn\n    // Fallback: scan all values in the row array for CN pattern match\n    if (raw === undefined || raw === null || String(raw).trim() === '') {\n      for (const val of rowArr) {\n        if (val !== undefined && val !== null && CN_PATTERN.test(String(val).trim())) {\n          raw = val;\n          break;\n        }\n      }\n    }\n  } else {\n    // fallback for old-style flat structure, just in case\n    raw = item.json['1'];\n  }\n\n  if (raw === undefined || raw === null) continue;\n  const cn = String(raw).trim();\n  if (cn === '') continue;\n  if (!CN_PATTERN.test(cn)) continue;\n  if (!seen.has(cn)) {\n    seen.add(cn);\n    cleaned.push({ json: { CN: cn } });\n  }\n}\nreturn cleaned;"
+      },
+      "id": "d395f762-d908-4ec5-993a-715cea6b0c19",
+      "name": "Code - Clean CN List",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -144,
+        -224
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n    '{{$json.CN}}' AS CN,\n    t.verification_code AS OTP\nFROM\n    (SELECT '{{$json.CN}}' AS cn_val) AS d\nLEFT JOIN\n    tablename t\n    ON t.ref_id = d.cn_val\nLIMIT 1;",
+        "options": {
+          "queryReplacement": "={{$json.CN}},{{$json.CN}}"
+        }
+      },
+      "id": "7aaff977-d0fb-45e2-a563-1b926d32762d",
+      "name": "MySQL - Get OTP",
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.4,
+      "position": [
+        80,
+        -224
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "mySql": {
+          "id": "AyAwdCkLQM0OnI5A",
+          "name": "MySQL account"
+        }
+      },
+      "continueOnFail": true,
+          },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================================\n// Final shape for the output Excel: CN | OTP\n// - If MySQL found no match, OTP will be null/undefined -> convert to ''\n// - If the MySQL node itself errored on a given item (continueOnFail),\n//   that item carries an `error` key instead of CN/OTP - handle gracefully\n//   by falling back to blank OTP rather than losing the row.\n// =====================================================================\nconst output = [];\n\nfor (const item of items) {\n  const cn = item.json.CN !== undefined ? item.json.CN : '';\n  const otpRaw = item.json.OTP;\n  const otp = (otpRaw === null || otpRaw === undefined) ? '' : String(otpRaw);\n\n  output.push({ json: { CN: cn, OTP: otp } });\n}\n\nreturn output;"
+      },
+      "id": "67e34d43-b445-4e3d-9f0e-9d1e6d10ab68",
+      "name": "Code - Format CN|OTP Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        304,
+        -224
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "toFile",
+        "fileFormat": "xlsx",
+        "options": {
+          "headerRow": true,
+          "sheetName": "Sheet1"
+        }
+      },
+      "id": "d32aa720-8a8a-4882-977a-0a9d888865aa",
+      "name": "Build Output Excel",
+      "type": "n8n-nodes-base.spreadsheetFile",
+      "typeVersion": 2,
+      "position": [
+        528,
+        -224
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "={{ $('Webhook - Receive Request').first().json.body.outputFile ? $('Webhook - Receive Request').first().json.body.outputFile : ('/files/output/' + $('Webhook - Receive Request').first().json.body.outputFileName) }}",
+        "options": {}
+      },
+      "id": "b51b6ba1-7b76-4207-b074-97ea2f19e80c",
+      "name": "Write Output Excel (Disk)",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        752,
+        -224
+      ],
+      "notes": "Writes to /files/output/<outputFileName> inside the container, which is bind-mounted to C:\\n8n\\n8n-otp\\output on the Windows host."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": true, \"outputFile\": ('/files/output/' + $('Webhook - Receive Request').first().json.body.outputFileName), \"rowCount\": $('Code - Format CN|OTP Rows').all().length } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "67be575f-b2bf-40cb-80d4-ec174df30522",
+      "name": "Respond - Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        976,
+        -224
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook - Receive Request": {
+      "main": [
+        [
+          {
+            "node": "IF - Valid Webhook Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Valid Webhook Token": {
+      "main": [
+        [
+          {
+            "node": "Read Input Excel (Disk)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond - Unauthorized",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Input Excel (Disk)": {
+      "main": [
+        [
+          {
+            "node": "Parse Excel -> CN Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Excel -> CN Rows": {
+      "main": [
+        [
+          {
+            "node": "Code - Clean CN List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Clean CN List": {
+      "main": [
+        [
+          {
+            "node": "MySQL - Get OTP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MySQL - Get OTP": {
+      "main": [
+        [
+          {
+            "node": "Code - Format CN|OTP Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Format CN|OTP Rows": {
+      "main": [
+        [
+          {
+            "node": "Build Output Excel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Output Excel": {
+      "main": [
+        [
+          {
+            "node": "Write Output Excel (Disk)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Output Excel (Disk)": {
+      "main": [
+        [
+          {
+            "node": "Respond - Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "32f7aa46-1dda-4f4a-91be-a1e9a85a7af8",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "a1f6afcf002ed727b1296b1340934ac9a641a706f39eae813ae75a43c0c458da"
+  },
+  "nodeGroups": [],
+  "id": "jc02mcENh0uJ8Zls",
+  "tags": []
+}

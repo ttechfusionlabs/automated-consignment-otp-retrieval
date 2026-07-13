@@ -1,0 +1,52 @@
+{
+  "_comment": "otp-lookup-workflow - PowerShell configuration. Edit values here, never hard-code in the .ps1 script.",
+
+  "Outlook": {
+    "InboxFolderName": "Inbox",
+    "ProcessedFolderName": "Processed_OTP",
+    "FailedFolderName": "Failed_OTP",
+    "SenderFilter": "sample@example.com",
+    "SubjectFilter": "delivery otp",
+    "OnlyProcessWithXlsxAttachment": true,
+    "MarkAsReadAfterProcessing": true
+  },
+
+  "TimeWindow": {
+    "_comment": "Hour (24h, local server time) boundary used to decide 1st vs 2nd mail of the day",
+    "SecondMailHourThreshold": 18
+  },
+
+  "Paths": {
+    "InputFolder": "C:\\n8n\\n8n-otp\\input",
+    "OutputFolder": "C:\\n8n\\n8n-otp\\output",
+    "LogFolder": "C:\\n8n\\n8n-otp\\logs",
+    "InputFileName": "input.xlsx"
+  },
+
+  "DockerFilePaths": {
+    "InputFolder": "/files/input",
+    "OutputFolder": "/files/output"
+  },
+
+  "Webhook": {
+    "Url": "http://localhost:5678/webhook/otp-process",
+    "SharedSecretHeaderName": "X-Webhook-Token",
+    "SharedSecretHeaderValue": "NEED TO PROVIDE TOKEN",
+    "TimeoutSeconds": 120,
+    "RetryCount": 3,
+    "RetryDelaySeconds": 15
+  },
+
+  "Email": {
+    "ReplyBodyText": "Please see the attach for your desire data.",
+    "SendAlertOnFailure": true,
+    "AlertRecipient": "receiver@example.com",
+    "AlertSubjectPrefix": "[OTP-AUTOMATION][ERROR]"
+  },
+
+  "Logging": {
+    "LogFileNamePattern": "otp-log-{0:yyyyMMdd}.txt",
+    "MaxLogAgeDays": 30,
+    "VerboseConsoleOutput": true
+  }
+}
